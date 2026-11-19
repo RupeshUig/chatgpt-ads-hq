@@ -53,7 +53,7 @@ export default function PlansPage() {
   const isSubmitting = fetcher.state !== "idle";
 
   return (
-    <s-page heading="Plans & Pricing">
+    <s-page heading="Plans">
       {isTest && (
         <s-banner tone="info">
           Test Billing Mode: You are in test mode. No actual charges will be
