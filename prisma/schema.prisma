@@ -94,21 +94,32 @@ model Shop {
   rules         Rule[]
   alerts        Alert[]
   auditLogs     AuditLog[]
+  feedDeltas    FeedDelta[]
 
   @@index([shopDomain])
 }
 
 model AdsConnection {
-  id              String              @id @default(uuid())
-  shopId          String              @unique
-  shop            Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  adAccountId     String?
-  encryptedApiKey String              // AES-256-GCM ciphertext + IV + auth tag
-  keyLast4        String              // Only the last 4 characters for merchant display
-  status          AdsConnectionStatus @default(PENDING)
-  lastCheckedAt   DateTime?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
+  id                      String              @id @default(uuid())
+  shopId                  String              @unique
+  shop                    Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  adAccountId             String?
+  encryptedApiKey         String              // AES-256-GCM ciphertext + IV + auth tag
+  keyLast4                String              // Only the last 4 characters for merchant display
+  status                  AdsConnectionStatus @default(PENDING)
+  lastCheckedAt           DateTime?
+  feedId                  String?             // OpenAI feed ID (e.g. fd_123)
+  sftpHost                String?             // e.g. sftp.ads.openai.com
+  sftpPort                Int?                @default(22)
+  sftpUsername            String?
+  encryptedSftpPassword   String?             // AES-256-GCM encrypted
+  encryptedSftpPrivateKey String?             // AES-256-GCM encrypted
+  feedAccessStatus        String              @default("UNKNOWN") // "ENABLED" | "DISABLED_403" | "UNKNOWN"
+  feedAccessMessage       String?
+  lastFeedUploadAt        DateTime?
+  lastFeedUploadStatus    String?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
 
   @@index([shopId])
 }
@@ -192,4 +203,22 @@ model AuditLog {
   createdAt  DateTime @default(now())
 
   @@index([shopId, createdAt])
+}
+
+model FeedDelta {
+  id               String   @id @default(uuid())
+  shopId           String
+  shop             Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyProductId String
+  shopifyVariantId String
+  priceMinor       Int
+  currency         String   @default("USD")
+  availability     String   // "in_stock" | "out_of_stock"
+  status           String   @default("PENDING") // "PENDING" | "SYNCED" | "FAILED"
+  errorMessage     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([shopId, shopifyVariantId])
+  @@index([shopId, status])
 }

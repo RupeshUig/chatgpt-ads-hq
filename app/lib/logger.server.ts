@@ -1,4 +1,4 @@
-import { captureException, captureMessage, isSentryActive } from "./sentry.server";
+import { captureException, captureMessage, isSentryActive } from "./sentry.server.ts";
 
 const REDACTED_KEYS = new Set([
   "apikey",
