@@ -20,7 +20,7 @@
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
     "typecheck": "react-router typegen && tsc --noEmit",
-    "test": "node --experimental-strip-types --test app/lib/crypto.server.test.ts"
+    "test": "node --experimental-strip-types --test app/**/*.test.ts"
   },
   "type": "module",
   "engines": {
