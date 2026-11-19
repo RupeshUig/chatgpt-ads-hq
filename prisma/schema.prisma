@@ -5,30 +5,191 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
+// -----------------------------------------------------------------------------
+// Shopify Session Storage
+// -----------------------------------------------------------------------------
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+// -----------------------------------------------------------------------------
+// Core Domain Models
+// -----------------------------------------------------------------------------
+
+enum Plan {
+  FREE
+  PRO
+  SCALE
+}
+
+enum AdsConnectionStatus {
+  PENDING
+  CONNECTED
+  ERROR
+  DISCONNECTED
+}
+
+enum SyncStatus {
+  SYNCED
+  REJECTED
+  EXCLUDED
+  PENDING
+}
+
+enum InsightLevel {
+  ACCOUNT
+  CAMPAIGN
+  AD_GROUP
+  AD
+  PRODUCT
+}
+
+enum RuleStatus {
+  ACTIVE
+  PAUSED
+  DISABLED
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model Shop {
+  id            String         @id @default(uuid())
+  shopDomain    String         @unique
+  plan          Plan           @default(FREE)
+  currency      String         @default("USD")
+  timezone      String         @default("UTC")
+  installedAt   DateTime       @default(now())
+  uninstalledAt DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  adsConnection AdsConnection?
+  products      Product[]
+  dailyInsights DailyInsight[]
+  rules         Rule[]
+  alerts        Alert[]
+  auditLogs     AuditLog[]
+
+  @@index([shopDomain])
+}
+
+model AdsConnection {
+  id              String              @id @default(uuid())
+  shopId          String              @unique
+  shop            Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  adAccountId     String?
+  encryptedApiKey String              // AES-256-GCM ciphertext + IV + auth tag
+  keyLast4        String              // Only the last 4 characters for merchant display
+  status          AdsConnectionStatus @default(PENDING)
+  lastCheckedAt   DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([shopId])
+}
+
+model Product {
+  id               String     @id @default(uuid())
+  shopId           String
+  shop             Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyProductId String
+  shopifyVariantId String
+  title            String
+  priceMinor       Int
+  costMinor        Int?       // Nullable if merchant hasn't filled cost per item in Shopify
+  currency         String     @default("USD")
+  syncStatus       SyncStatus @default(PENDING)
+  rejectReason     String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@unique([shopId, shopifyVariantId])
+  @@index([shopId])
+  @@index([shopId, syncStatus])
+}
+
+model DailyInsight {
+  id                   String       @id @default(uuid())
+  shopId               String
+  shop                 Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  date                 DateTime     @db.Date
+  level                InsightLevel
+  entityId             String
+  impressions          Int          @default(0)
+  clicks               Int          @default(0)
+  spendMinor           Int          @default(0)
+  conversions          Int          @default(0)
+  conversionValueMinor Int          @default(0)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@unique([shopId, date, level, entityId])
+  @@index([shopId, date])
+  @@index([shopId, level])
+}
+
+model Rule {
+  id         String     @id @default(uuid())
+  shopId     String
+  shop       Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name       String
+  ruleType   String     // e.g., DAILY_PROFIT_PAUSE, MONTHLY_SPEND_CAP
+  status     RuleStatus @default(ACTIVE)
+  conditions Json       // Threshold settings, max cost per sale, etc.
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([shopId])
+}
+
+model Alert {
+  id        String        @id @default(uuid())
+  shopId    String
+  shop      Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  severity  AlertSeverity @default(INFO)
+  isRead    Boolean       @default(false)
+  createdAt DateTime      @default(now())
+
+  @@index([shopId, isRead])
+  @@index([shopId, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  action     String   // e.g., RULE_TRIGGERED, AD_PAUSED, KEY_UPDATED
+  entityType String   // CAMPAIGN, AD_GROUP, PRODUCT, CONNECTION
+  entityId   String?
+  details    Json?    // Reason, previous state for undo, etc.
+  createdAt  DateTime @default(now())
+
+  @@index([shopId, createdAt])
 }
