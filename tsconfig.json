@@ -8,6 +8,7 @@
     "allowSyntheticDefaultImports": true,
     "removeComments": false,
     "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "allowJs": true,
     "resolveJsonModule": true,

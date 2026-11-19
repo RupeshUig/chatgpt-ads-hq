@@ -7,9 +7,13 @@ import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import { initSentry } from "./lib/sentry.server";
 import { logger } from "./lib/logger.server";
+import { validateEncryptionKey } from "./lib/crypto.server";
 
 // Initialize Sentry server-side tracking from SENTRY_DSN
 initSentry();
+
+// Validate encryption key at startup
+validateEncryptionKey();
 
 export const streamTimeout = 5000;
 
