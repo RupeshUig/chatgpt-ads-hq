@@ -20,6 +20,15 @@ describe("crypto.server", () => {
     assert.doesNotThrow(() => validateEncryptionKey());
   });
 
+  test("validates and retrieves 32-byte hex key correctly (64 characters)", () => {
+    const hexKey = crypto.randomBytes(32).toString("hex");
+    assert.strictEqual(hexKey.length, 64);
+    process.env.ENCRYPTION_KEY = hexKey;
+    const key = getEncryptionKey();
+    assert.strictEqual(key.length, 32);
+    assert.doesNotThrow(() => validateEncryptionKey());
+  });
+
   test("throws error if ENCRYPTION_KEY is missing", () => {
     delete process.env.ENCRYPTION_KEY;
     assert.throws(

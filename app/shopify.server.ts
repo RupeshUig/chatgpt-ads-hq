@@ -7,6 +7,7 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 import { logger } from "./lib/logger.server";
+import { BILLING_CONFIG, PLAN_NAMES } from "./config/billing.server";
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -19,6 +20,26 @@ const shopify = shopifyApp({
   distribution: AppDistribution.AppStore,
   future: {
     expiringOfflineAccessTokens: true,
+  },
+  billing: {
+    [PLAN_NAMES.PRO]: {
+      lineItems: [
+        {
+          amount: BILLING_CONFIG.plans.PRO.priceUSD,
+          currencyCode: "USD",
+          interval: BILLING_CONFIG.plans.PRO.interval!,
+        },
+      ],
+    },
+    [PLAN_NAMES.SCALE]: {
+      lineItems: [
+        {
+          amount: BILLING_CONFIG.plans.SCALE.priceUSD,
+          currencyCode: "USD",
+          interval: BILLING_CONFIG.plans.SCALE.interval!,
+        },
+      ],
+    },
   },
   hooks: {
     afterAuth: async ({ session, admin }) => {

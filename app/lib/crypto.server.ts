@@ -5,25 +5,30 @@ const IV_LENGTH_BYTES = 12;
 const KEY_LENGTH_BYTES = 32;
 
 /**
- * Validates and retrieves the 32-byte encryption key from ENCRYPTION_KEY (base64).
+ * Validates and retrieves the 32-byte encryption key from ENCRYPTION_KEY (base64 or 64-char hex).
  * Throws a descriptive error if missing or invalid length.
  */
 export function getEncryptionKey(): Buffer {
   const envKey = process.env.ENCRYPTION_KEY?.trim();
   if (!envKey) {
     throw new Error(
-      "ENCRYPTION_KEY environment variable is missing. It must be a 32-byte base64-encoded string."
+      "ENCRYPTION_KEY environment variable is missing. It must be a 32-byte base64 or 64-char hex encoded string."
     );
+  }
+
+  // Support 64-character hexadecimal key (32 bytes)
+  if (envKey.length === 64 && /^[0-9a-fA-F]+$/.test(envKey)) {
+    return Buffer.from(envKey, "hex");
   }
 
   const keyBuffer = Buffer.from(envKey, "base64");
-  if (keyBuffer.length !== KEY_LENGTH_BYTES) {
-    throw new Error(
-      `ENCRYPTION_KEY is invalid. Expected ${KEY_LENGTH_BYTES} bytes (base64-encoded), received ${keyBuffer.length} bytes.`
-    );
+  if (keyBuffer.length === KEY_LENGTH_BYTES) {
+    return keyBuffer;
   }
 
-  return keyBuffer;
+  throw new Error(
+    `ENCRYPTION_KEY is invalid. Expected 32 bytes (base64 or hex-encoded), received ${keyBuffer.length} bytes.`
+  );
 }
 
 /**
