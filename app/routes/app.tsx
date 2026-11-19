@@ -4,9 +4,23 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+
+  // Safety fallback: ensure Shop record exists in database
+  await db.shop.upsert({
+    where: { shopDomain: session.shop },
+    create: {
+      shopDomain: session.shop,
+      installedAt: new Date(),
+      uninstalledAt: null,
+    },
+    update: {
+      uninstalledAt: null,
+    },
+  });
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
