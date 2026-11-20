@@ -93,8 +93,9 @@ model Shop {
   dailyInsights DailyInsight[]
   rules         Rule[]
   alerts        Alert[]
-  auditLogs     AuditLog[]
-  feedDeltas    FeedDelta[]
+  auditLogs          AuditLog[]
+  feedDeltas         FeedDelta[]
+  conversionSendLogs ConversionSendLog[]
 
   @@index([shopDomain])
 }
@@ -106,6 +107,9 @@ model AdsConnection {
   adAccountId             String?
   encryptedApiKey         String              // AES-256-GCM ciphertext + IV + auth tag
   keyLast4                String              // Only the last 4 characters for merchant display
+  encryptedConversionKey  String?             // AES-256-GCM ciphertext + IV + auth tag
+  conversionKeyLast4      String?             // Only the last 4 characters for merchant display
+  pixelId                 String?             // OpenAI Measurement Pixel ID (e.g. pid_123456789)
   status                  AdsConnectionStatus @default(PENDING)
   lastCheckedAt           DateTime?
   feedId                  String?             // OpenAI feed ID (e.g. fd_123)
@@ -222,3 +226,21 @@ model FeedDelta {
   @@unique([shopId, shopifyVariantId])
   @@index([shopId, status])
 }
+
+model ConversionSendLog {
+  id           String   @id @default(uuid())
+  shopId       String
+  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  eventId      String   // Stable Shopify numeric order ID for deduplication
+  eventName    String   @default("order_created")
+  status       String   // "SUCCESS" | "FAILED" | "SKIPPED"
+  errorCode    String?  // HTTP status or OpenAI error code
+  errorMessage String?  // Sanitized generic error message without PII
+  hasClickId   Boolean  @default(false)
+  sentAt       DateTime @default(now())
+
+  @@index([shopId, eventId])
+  @@index([shopId, status])
+  @@index([shopId, sentAt])
+}
+
