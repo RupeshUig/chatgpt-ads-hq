@@ -1,0 +1,18 @@
+name = "openai-pixel"
+type = "web_pixel_extension"
+uid = "d88d86f3-8009-e560-0e9f-d113ee200e6e6ce5a430"
+
+runtime_context = "strict"
+
+[settings]
+type = "object"
+
+[settings.fields.pixelId]
+name = "OpenAI Pixel ID"
+description = "Your OpenAI Measurement Pixel ID (e.g. pid_123456789)"
+type = "single_line_text_field"
+
+[settings.fields.endpoint]
+name = "OpenAI Pixel Endpoint"
+description = "OpenAI Pixel collector endpoint"
+type = "single_line_text_field"

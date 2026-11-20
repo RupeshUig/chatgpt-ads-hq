@@ -1,5 +1,6 @@
 {
   "name": "cartlight-ads-hq",
+  "packageManager": "npm@11.6.1",
   "private": true,
   "scripts": {
     "build": "react-router build",
