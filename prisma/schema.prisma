@@ -186,13 +186,17 @@ model Alert {
   id        String        @id @default(uuid())
   shopId    String
   shop      Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  alertType String?       // API_KEY_INVALID | PRODUCT_SYNC_FAILED | TRACKING_STOPPED_24H
   title     String
   message   String
   severity  AlertSeverity @default(INFO)
   isRead    Boolean       @default(false)
+  isDone    Boolean       @default(false)
   createdAt DateTime      @default(now())
 
   @@index([shopId, isRead])
+  @@index([shopId, isDone])
+  @@index([shopId, alertType, createdAt])
   @@index([shopId, createdAt])
 }
 

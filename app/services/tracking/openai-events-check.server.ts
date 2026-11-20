@@ -114,22 +114,25 @@ export async function checkOpenAiEventsHealth(
     },
   };
 
-  // 1. Check local ConversionSendLog for purchases within the last 15 minutes
-  const recentSuccessfulPurchases = await db.conversionSendLog.findMany({
+  // 1. Check local ConversionSendLog for events within the last 15 minutes
+  const recentSuccessfulEvents = await db.conversionSendLog.findMany({
     where: {
       shopId,
-      eventName: "order_created",
       status: "SUCCESS",
       sentAt: { gte: fifteenMinutesAgo },
     },
     orderBy: { sentAt: "desc" },
   });
 
-  if (recentSuccessfulPurchases.length > 0) {
-    eventMap.order_created.count = recentSuccessfulPurchases.length;
-    eventMap.order_created.status = "active";
-    eventMap.order_created.lastSeenAt =
-      recentSuccessfulPurchases[0].sentAt.toISOString();
+  for (const ev of recentSuccessfulEvents) {
+    const name = ev.eventName as EventHealthStatus["eventName"];
+    if (eventMap[name]) {
+      eventMap[name].count += 1;
+      eventMap[name].status = "active";
+      if (!eventMap[name].lastSeenAt || ev.sentAt > new Date(eventMap[name].lastSeenAt)) {
+        eventMap[name].lastSeenAt = ev.sentAt.toISOString();
+      }
+    }
   }
 
   // 2. Query remote OpenAI Events Check endpoint if configured

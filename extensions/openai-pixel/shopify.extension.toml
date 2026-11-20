@@ -16,3 +16,8 @@ type = "single_line_text_field"
 name = "OpenAI Pixel Endpoint"
 description = "OpenAI Pixel collector endpoint"
 type = "single_line_text_field"
+
+[settings.fields.appUrl]
+name = "App URL"
+description = "CartLight App URL for tracking health logs"
+type = "single_line_text_field"

@@ -2,32 +2,33 @@ import { logger } from "../../lib/logger.server.ts";
 
 export const OPENAI_CAPI_ENDPOINT = "https://bzr.openai.com/v1/events";
 
-export interface CapiContentItem {
-  content_id: string;
-  content_type: "product";
-  quantity: number;
-  item_price: number; // Integer minor units (cents)
+export interface CapiEventUser {
+  click_id?: string;
 }
 
-export interface CapiCustomData {
-  currency: string;
-  value: number; // Integer minor units (cents)
-  content_type: "product";
-  contents?: CapiContentItem[];
-  num_items: number;
+export interface CapiEventData {
+  type: "contents";
+  amount?: number; // Integer minor units (cents)
+  currency?: string;
 }
 
-export interface CapiUserData {
-  click_id?: string; // Captured from oppref
+export interface CapiEventItem {
+  id: string; // Stable Shopify numeric Order ID matching pixel
+  type:
+    | "page_viewed"
+    | "contents_viewed"
+    | "items_added"
+    | "checkout_started"
+    | "order_created";
+  timestamp_ms: number;
+  action_source: "web";
+  source_url: string;
+  user?: CapiEventUser;
+  data: CapiEventData;
 }
 
-export interface CapiOrderPayload {
-  event_name: "order_created";
-  event_id: string; // Exact Shopify numeric Order ID matching pixel
-  event_time: number; // Unix timestamp in seconds
-  event_source_url: string;
-  user_data: CapiUserData;
-  custom_data: CapiCustomData;
+export interface CapiBatchPayload {
+  events: CapiEventItem[];
 }
 
 export interface CapiSendResult {
@@ -55,18 +56,19 @@ export function toMinorUnits(amount: number | string | undefined | null): number
 }
 
 /**
- * Builds user_data containing strictly the click_id, NEVER any customer PII.
- * Per OpenAI CAPI docs, identifiers are optional; when not required, send NONE.
+ * Builds user object containing strictly the click_id, NEVER any customer PII.
  */
-export function buildCapiUserData(clickId?: string | null): CapiUserData {
+export function buildCapiUser(clickId?: string | null): CapiEventUser | undefined {
   if (clickId && clickId.trim()) {
     return { click_id: clickId.trim() };
   }
-  return {};
+  return undefined;
 }
 
+export const buildCapiUserData = buildCapiUser;
+
 /**
- * Builds the CAPI order_created payload using the exact same event_id as the Web Pixel.
+ * Builds the CAPI order_created batch payload matching OpenAI live bzr schema.
  */
 export function buildCapiPurchasePayload(options: {
   orderId: string | number;
@@ -81,60 +83,41 @@ export function buildCapiPurchasePayload(options: {
     quantity?: number | null;
     unitPriceMinor?: number | null;
   }> | null;
-}): CapiOrderPayload {
+}): CapiBatchPayload {
   const eventId = normalizeShopifyOrderId(options.orderId);
   const currency = (options.currency || "USD").toUpperCase();
-  const eventTime = options.createdAt
-    ? Math.floor(new Date(options.createdAt).getTime() / 1000)
-    : Math.floor(Date.now() / 1000);
+  const timestampMs = options.createdAt
+    ? new Date(options.createdAt).getTime()
+    : Date.now();
 
-  const contents: CapiContentItem[] = [];
-  let numItems = 0;
-
-  if (options.lineItems) {
-    for (const item of options.lineItems) {
-      const qty = item.quantity || 1;
-      numItems += qty;
-      const contentId =
-        normalizeShopifyOrderId(item.variantId) ||
-        normalizeShopifyOrderId(item.productId);
-      const unitPriceMinor = item.unitPriceMinor || 0;
-
-      if (contentId) {
-        contents.push({
-          content_id: contentId,
-          content_type: "product",
-          quantity: qty,
-          item_price: unitPriceMinor,
-        });
-      }
-    }
-  }
+  const user = buildCapiUser(options.clickId);
 
   return {
-    event_name: "order_created",
-    event_id: eventId,
-    event_time: eventTime,
-    event_source_url: `https://${options.shopDomain}`,
-    user_data: buildCapiUserData(options.clickId),
-    custom_data: {
-      currency,
-      value: options.totalPriceMinor,
-      content_type: "product",
-      num_items: numItems > 0 ? numItems : 1,
-      contents: contents.length > 0 ? contents : undefined,
-    },
+    events: [
+      {
+        id: eventId,
+        type: "order_created",
+        timestamp_ms: timestampMs,
+        action_source: "web",
+        source_url: `https://${options.shopDomain}`,
+        user,
+        data: {
+          type: "contents",
+          amount: options.totalPriceMinor,
+          currency,
+        },
+      },
+    ],
   };
 }
 
 /**
  * Dispatches the purchase event to OpenAI Conversions API endpoint.
- * Requires pixelId and encrypted/decrypted conversion key.
  */
 export async function sendOpenAiCapiEvent(
   pixelId: string,
   conversionKey: string,
-  payload: CapiOrderPayload,
+  payload: CapiBatchPayload,
   endpointBase: string = OPENAI_CAPI_ENDPOINT
 ): Promise<CapiSendResult> {
   const cleanPixelId = pixelId.trim();
@@ -176,8 +159,12 @@ export async function sendOpenAiCapiEvent(
     }
 
     const errorMsg =
-      errorData && typeof errorData === "object" && "message" in errorData
-        ? String((errorData as { message: unknown }).message)
+      errorData && typeof errorData === "object"
+        ? "error" in errorData
+          ? JSON.stringify((errorData as { error: unknown }).error)
+          : "message" in errorData
+          ? String((errorData as { message: unknown }).message)
+          : JSON.stringify(errorData)
         : `OpenAI CAPI returned HTTP ${response.status}`;
 
     // Ensure error message is sanitized and free of customer PII
@@ -195,7 +182,7 @@ export async function sendOpenAiCapiEvent(
   } catch (err: unknown) {
     logger.error("Network error sending OpenAI CAPI event", {
       error: String(err),
-      eventId: payload.event_id,
+      eventsCount: payload.events?.length,
     });
 
     return {

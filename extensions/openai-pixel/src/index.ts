@@ -7,7 +7,7 @@ import {
   buildAddToCartPayload,
   buildCheckoutStartedPayload,
   buildOrderCreatedPayload,
-  type OpenAIEventPayload,
+  type OpenAILiveBatchPayload,
 } from "./pixel-utils";
 
 register(({ analytics, browser, init, settings, customerPrivacy }) => {
@@ -15,6 +15,7 @@ register(({ analytics, browser, init, settings, customerPrivacy }) => {
   const baseEndpoint = String(
     settings?.endpoint || "https://bzr.openai.com/v1/events"
   ).trim();
+  const appUrl = String(settings?.appUrl || "").trim();
 
   // If pixel ID is not set in extension settings, skip tracking
   if (!pixelId) {
@@ -74,7 +75,7 @@ register(({ analytics, browser, init, settings, customerPrivacy }) => {
    * Dispatches payload to OpenAI Pixel endpoint via fetch with keepalive: true
    * Ensures strict zero-PII and consent enforcement
    */
-  async function dispatchOpenAIEvent(payload: OpenAIEventPayload) {
+  async function dispatchOpenAIEvent(payload: OpenAILiveBatchPayload) {
     if (!consentGranted) {
       return;
     }
@@ -90,6 +91,30 @@ register(({ analytics, browser, init, settings, customerPrivacy }) => {
       });
     } catch (err) {
       console.error("[OpenAI Pixel] Error sending event:", err);
+    }
+
+    // Also notify app backend for real-time tracking health checks
+    if (appUrl) {
+      try {
+        const firstEvent = payload.events[0];
+        if (firstEvent) {
+          await fetch(`${appUrl}/api/pixel-events`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              pixelId,
+              eventName: firstEvent.type,
+              eventId: firstEvent.id,
+              clickId: firstEvent.user?.click_id || null,
+            }),
+            keepalive: true,
+          });
+        }
+      } catch {
+        // Silently tolerate app ping failure
+      }
     }
   }
 

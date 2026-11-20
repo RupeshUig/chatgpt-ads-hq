@@ -38,15 +38,15 @@ describe("OpenAI Conversions API (CAPI) Service", () => {
     assert.deepEqual(withClick, { click_id: "oppref_abc123" });
 
     const withoutClick = buildCapiUserData("");
-    assert.deepEqual(withoutClick, {});
+    assert.equal(withoutClick, undefined);
 
     // Verify zero PII properties exist
-    assert.equal("email" in withClick, false);
-    assert.equal("phone" in withClick, false);
-    assert.equal("first_name" in withClick, false);
-    assert.equal("last_name" in withClick, false);
-    assert.equal("address" in withClick, false);
-    assert.equal("client_ip_address" in withClick, false);
+    assert.equal("email" in (withClick || {}), false);
+    assert.equal("phone" in (withClick || {}), false);
+    assert.equal("first_name" in (withClick || {}), false);
+    assert.equal("last_name" in (withClick || {}), false);
+    assert.equal("address" in (withClick || {}), false);
+    assert.equal("client_ip_address" in (withClick || {}), false);
   });
 
   it("builds CAPI order_created payload with exact matching event_id for deduplication", () => {
@@ -67,23 +67,13 @@ describe("OpenAI Conversions API (CAPI) Service", () => {
       ],
     });
 
-    assert.equal(payload.event_name, "order_created");
+    assert.equal(payload.events[0].type, "order_created");
     // Verify event_id is numeric order ID matching pixel
-    assert.equal(payload.event_id, "5544332211");
-    assert.equal(payload.event_source_url, "https://mystore.myshopify.com");
-    assert.equal(payload.event_time, 1795147200);
-    assert.equal(payload.user_data.click_id, "click_oppref_999");
-    assert.equal(payload.custom_data.value, 8950);
-    assert.equal(payload.custom_data.currency, "USD");
-    assert.equal(payload.custom_data.num_items, 2);
-    assert.deepEqual(payload.custom_data.contents, [
-      {
-        content_id: "111",
-        content_type: "product",
-        quantity: 2,
-        item_price: 4475,
-      },
-    ]);
+    assert.equal(payload.events[0].id, "5544332211");
+    assert.equal(payload.events[0].source_url, "https://mystore.myshopify.com");
+    assert.equal(payload.events[0].user?.click_id, "click_oppref_999");
+    assert.equal(payload.events[0].data.amount, 8950);
+    assert.equal(payload.events[0].data.currency, "USD");
   });
 
   it("encrypts and decrypts conversion keys with AES-256-GCM identically to API keys", () => {
@@ -143,9 +133,9 @@ describe("OpenAI Conversions API (CAPI) Service", () => {
       assert.equal(capturedAuth, "Bearer key_test_conversion");
 
       const parsed = JSON.parse(capturedBody);
-      assert.equal(parsed.event_name, "order_created");
-      assert.equal(parsed.event_id, "998877");
-      assert.equal(parsed.user_data.click_id, "click_1");
+      assert.equal(parsed.events[0].type, "order_created");
+      assert.equal(parsed.events[0].id, "998877");
+      assert.equal(parsed.events[0].user?.click_id, "click_1");
     } finally {
       globalThis.fetch = originalFetch;
     }

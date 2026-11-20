@@ -1,41 +1,32 @@
 /**
  * OpenAI Measurement Pixel Utilities & Payload Builders
  *
- * Implements strict zero-PII event schemas and deduplication logic
- * for the OpenAI Measurement Pixel & Conversions API.
+ * Implements strict zero-PII live schema matching bzr.openai.com
  */
 
-export interface OpenAIContentItem {
-  content_id: string;
-  content_type: "product";
-  quantity: number;
-  item_price: number; // Integer minor units (e.g. cents)
-}
-
-export interface OpenAICustomData {
-  currency?: string;
-  value?: number; // Integer minor units (e.g. cents)
-  content_type?: "product";
-  contents?: OpenAIContentItem[];
-  num_items?: number;
-}
-
-export interface OpenAIUserData {
-  click_id?: string; // Captured from oppref URL param / cookie
-}
-
-export interface OpenAIEventPayload {
-  event_name:
+export interface OpenAILiveEventItem {
+  id: string;
+  type:
     | "page_viewed"
     | "contents_viewed"
     | "items_added"
     | "checkout_started"
     | "order_created";
-  event_id: string; // Used for deduplication (pid + event_id)
-  event_time: number; // Unix timestamp in seconds
-  event_source_url: string;
-  user_data: OpenAIUserData;
-  custom_data?: OpenAICustomData;
+  timestamp_ms: number;
+  action_source: "web";
+  source_url: string;
+  user?: {
+    click_id?: string;
+  };
+  data: {
+    type: "contents";
+    amount?: number; // Integer minor units (e.g. cents)
+    currency?: string;
+  };
+}
+
+export interface OpenAILiveBatchPayload {
+  events: OpenAILiveEventItem[];
 }
 
 export interface ProductVariantInput {
@@ -99,7 +90,6 @@ export function extractOppref(urlStr: string | undefined | null): string | null 
     const oppref = url.searchParams.get("oppref");
     return oppref ? oppref.trim() : null;
   } catch {
-    // If invalid URL, fallback to regex
     const match = urlStr.match(/[?&]oppref=([^&#]+)/);
     return match ? decodeURIComponent(match[1]).trim() : null;
   }
@@ -113,18 +103,17 @@ export function hasUserConsent(privacy?: {
   marketingAllowed?: boolean | null;
 } | null): boolean {
   if (!privacy) return false;
-  // OpenAI advertising pixel requires marketing and analytics consent
   return Boolean(privacy.analyticsProcessingAllowed) && Boolean(privacy.marketingAllowed);
 }
 
 /**
- * Builds user_data containing strictly the click_id, NEVER any customer PII
+ * Builds user object containing strictly the click_id, NEVER any customer PII
  */
-export function buildUserData(clickId?: string | null): OpenAIUserData {
+export function buildUserData(clickId?: string | null): { click_id: string } | undefined {
   if (clickId && clickId.trim()) {
     return { click_id: clickId.trim() };
   }
-  return {};
+  return undefined;
 }
 
 /**
@@ -135,13 +124,21 @@ export function buildPageViewPayload(
   url: string,
   clickId?: string | null,
   timestampMs: number = Date.now()
-): OpenAIEventPayload {
+): OpenAILiveBatchPayload {
   return {
-    event_name: "page_viewed",
-    event_id: eventId,
-    event_time: Math.floor(timestampMs / 1000),
-    event_source_url: url,
-    user_data: buildUserData(clickId),
+    events: [
+      {
+        id: eventId,
+        type: "page_viewed",
+        timestamp_ms: timestampMs,
+        action_source: "web",
+        source_url: url,
+        user: buildUserData(clickId),
+        data: {
+          type: "contents",
+        },
+      },
+    ],
   };
 }
 
@@ -154,38 +151,26 @@ export function buildProductViewPayload(
   productVariant?: ProductVariantInput | null,
   clickId?: string | null,
   timestampMs: number = Date.now()
-): OpenAIEventPayload {
+): OpenAILiveBatchPayload {
   const priceMinor = toMinorUnits(productVariant?.price?.amount);
-  const currency = productVariant?.price?.currencyCode || "USD";
-  const contentId =
-    normalizeShopifyId(productVariant?.id) ||
-    normalizeShopifyId(productVariant?.product?.id);
-
-  const customData: OpenAICustomData = {
-    content_type: "product",
-    currency,
-    value: priceMinor,
-    num_items: 1,
-  };
-
-  if (contentId) {
-    customData.contents = [
-      {
-        content_id: contentId,
-        content_type: "product",
-        quantity: 1,
-        item_price: priceMinor,
-      },
-    ];
-  }
+  const currency = (productVariant?.price?.currencyCode || "USD").toUpperCase();
 
   return {
-    event_name: "contents_viewed",
-    event_id: eventId,
-    event_time: Math.floor(timestampMs / 1000),
-    event_source_url: url,
-    user_data: buildUserData(clickId),
-    custom_data: customData,
+    events: [
+      {
+        id: eventId,
+        type: "contents_viewed",
+        timestamp_ms: timestampMs,
+        action_source: "web",
+        source_url: url,
+        user: buildUserData(clickId),
+        data: {
+          type: "contents",
+          amount: priceMinor,
+          currency,
+        },
+      },
+    ],
   };
 }
 
@@ -198,44 +183,33 @@ export function buildAddToCartPayload(
   cartLine?: CartLineInput | null,
   clickId?: string | null,
   timestampMs: number = Date.now()
-): OpenAIEventPayload {
+): OpenAILiveBatchPayload {
   const quantity = cartLine?.quantity || 1;
   const unitPriceMinor = toMinorUnits(cartLine?.merchandise?.price?.amount);
   const lineTotalMinor =
     toMinorUnits(cartLine?.cost?.totalAmount?.amount) || unitPriceMinor * quantity;
-  const currency =
+  const currency = (
     cartLine?.cost?.totalAmount?.currencyCode ||
     cartLine?.merchandise?.price?.currencyCode ||
-    "USD";
-  const contentId =
-    normalizeShopifyId(cartLine?.merchandise?.id) ||
-    normalizeShopifyId(cartLine?.merchandise?.product?.id);
-
-  const customData: OpenAICustomData = {
-    content_type: "product",
-    currency,
-    value: lineTotalMinor,
-    num_items: quantity,
-  };
-
-  if (contentId) {
-    customData.contents = [
-      {
-        content_id: contentId,
-        content_type: "product",
-        quantity,
-        item_price: unitPriceMinor,
-      },
-    ];
-  }
+    "USD"
+  ).toUpperCase();
 
   return {
-    event_name: "items_added",
-    event_id: eventId,
-    event_time: Math.floor(timestampMs / 1000),
-    event_source_url: url,
-    user_data: buildUserData(clickId),
-    custom_data: customData,
+    events: [
+      {
+        id: eventId,
+        type: "items_added",
+        timestamp_ms: timestampMs,
+        action_source: "web",
+        source_url: url,
+        user: buildUserData(clickId),
+        data: {
+          type: "contents",
+          amount: lineTotalMinor,
+          currency,
+        },
+      },
+    ],
   };
 }
 
@@ -248,47 +222,26 @@ export function buildCheckoutStartedPayload(
   checkout?: CheckoutInput | null,
   clickId?: string | null,
   timestampMs: number = Date.now()
-): OpenAIEventPayload {
+): OpenAILiveBatchPayload {
   const totalValueMinor = toMinorUnits(checkout?.totalPrice?.amount);
-  const currency = checkout?.totalPrice?.currencyCode || "USD";
-
-  const contents: OpenAIContentItem[] = [];
-  let numItems = 0;
-
-  if (checkout?.lineItems) {
-    for (const item of checkout.lineItems) {
-      const qty = item.quantity || 1;
-      numItems += qty;
-      const contentId =
-        normalizeShopifyId(item.variant?.id) ||
-        normalizeShopifyId(item.variant?.product?.id) ||
-        normalizeShopifyId(item.id);
-      const unitPriceMinor = toMinorUnits(item.variant?.price?.amount);
-
-      if (contentId) {
-        contents.push({
-          content_id: contentId,
-          content_type: "product",
-          quantity: qty,
-          item_price: unitPriceMinor,
-        });
-      }
-    }
-  }
+  const currency = (checkout?.totalPrice?.currencyCode || "USD").toUpperCase();
 
   return {
-    event_name: "checkout_started",
-    event_id: checkout?.token || eventId,
-    event_time: Math.floor(timestampMs / 1000),
-    event_source_url: url,
-    user_data: buildUserData(clickId),
-    custom_data: {
-      content_type: "product",
-      currency,
-      value: totalValueMinor,
-      num_items: numItems,
-      contents: contents.length > 0 ? contents : undefined,
-    },
+    events: [
+      {
+        id: checkout?.token || eventId,
+        type: "checkout_started",
+        timestamp_ms: timestampMs,
+        action_source: "web",
+        source_url: url,
+        user: buildUserData(clickId),
+        data: {
+          type: "contents",
+          amount: totalValueMinor,
+          currency,
+        },
+      },
+    ],
   };
 }
 
@@ -302,51 +255,30 @@ export function buildOrderCreatedPayload(
   checkout?: CheckoutInput | null,
   clickId?: string | null,
   timestampMs: number = Date.now()
-): OpenAIEventPayload {
+): OpenAILiveBatchPayload {
   const orderId =
     normalizeShopifyId(checkout?.order?.id) ||
     checkout?.token ||
     fallbackEventId;
 
   const totalValueMinor = toMinorUnits(checkout?.totalPrice?.amount);
-  const currency = checkout?.totalPrice?.currencyCode || "USD";
-
-  const contents: OpenAIContentItem[] = [];
-  let numItems = 0;
-
-  if (checkout?.lineItems) {
-    for (const item of checkout.lineItems) {
-      const qty = item.quantity || 1;
-      numItems += qty;
-      const contentId =
-        normalizeShopifyId(item.variant?.id) ||
-        normalizeShopifyId(item.variant?.product?.id) ||
-        normalizeShopifyId(item.id);
-      const unitPriceMinor = toMinorUnits(item.variant?.price?.amount);
-
-      if (contentId) {
-        contents.push({
-          content_id: contentId,
-          content_type: "product",
-          quantity: qty,
-          item_price: unitPriceMinor,
-        });
-      }
-    }
-  }
+  const currency = (checkout?.totalPrice?.currencyCode || "USD").toUpperCase();
 
   return {
-    event_name: "order_created",
-    event_id: orderId,
-    event_time: Math.floor(timestampMs / 1000),
-    event_source_url: url,
-    user_data: buildUserData(clickId),
-    custom_data: {
-      content_type: "product",
-      currency,
-      value: totalValueMinor,
-      num_items: numItems,
-      contents: contents.length > 0 ? contents : undefined,
-    },
+    events: [
+      {
+        id: orderId,
+        type: "order_created",
+        timestamp_ms: timestampMs,
+        action_source: "web",
+        source_url: url,
+        user: buildUserData(clickId),
+        data: {
+          type: "contents",
+          amount: totalValueMinor,
+          currency,
+        },
+      },
+    ],
   };
 }

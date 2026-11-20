@@ -98,11 +98,11 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
 
     // Verify absolutely no PII properties exist
     const emptyUserData = buildUserData("");
-    assert.deepEqual(emptyUserData, {});
-    assert.equal("email" in userData, false);
-    assert.equal("phone" in userData, false);
-    assert.equal("first_name" in userData, false);
-    assert.equal("ip" in userData, false);
+    assert.equal(emptyUserData, undefined);
+    assert.equal("email" in (userData || {}), false);
+    assert.equal("phone" in (userData || {}), false);
+    assert.equal("first_name" in (userData || {}), false);
+    assert.equal("ip" in (userData || {}), false);
   });
 
   it("builds correct page_viewed payload", () => {
@@ -113,12 +113,12 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
       1700000000000
     );
 
-    assert.equal(payload.event_name, "page_viewed");
-    assert.equal(payload.event_id, "evt_page_1");
-    assert.equal(payload.event_time, 1700000000);
-    assert.equal(payload.event_source_url, "https://example.com/");
-    assert.equal(payload.user_data.click_id, "click_abc");
-    assert.equal(payload.custom_data, undefined);
+    assert.equal(payload.events[0].type, "page_viewed");
+    assert.equal(payload.events[0].id, "evt_page_1");
+    assert.equal(payload.events[0].timestamp_ms, 1700000000000);
+    assert.equal(payload.events[0].source_url, "https://example.com/");
+    assert.equal(payload.events[0].user?.click_id, "click_abc");
+    assert.equal(payload.events[0].data.type, "contents");
   });
 
   it("builds correct contents_viewed payload for product_viewed", () => {
@@ -134,19 +134,11 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
       1700000000000
     );
 
-    assert.equal(payload.event_name, "contents_viewed");
-    assert.equal(payload.event_id, "evt_prod_1");
-    assert.equal(payload.custom_data?.value, 3500); // 3500 cents
-    assert.equal(payload.custom_data?.currency, "USD");
-    assert.equal(payload.custom_data?.num_items, 1);
-    assert.deepEqual(payload.custom_data?.contents, [
-      {
-        content_id: "8877",
-        content_type: "product",
-        quantity: 1,
-        item_price: 3500,
-      },
-    ]);
+    assert.equal(payload.events[0].type, "contents_viewed");
+    assert.equal(payload.events[0].id, "evt_prod_1");
+    assert.equal(payload.events[0].data.amount, 3500); // 3500 cents
+    assert.equal(payload.events[0].data.currency, "USD");
+    assert.equal(payload.events[0].user?.click_id, "click_abc");
   });
 
   it("builds correct items_added payload for product_added_to_cart", () => {
@@ -165,19 +157,10 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
       1700000000000
     );
 
-    assert.equal(payload.event_name, "items_added");
-    assert.equal(payload.event_id, "evt_cart_1");
-    assert.equal(payload.custom_data?.value, 5000); // 50.00 EUR in cents
-    assert.equal(payload.custom_data?.currency, "EUR");
-    assert.equal(payload.custom_data?.num_items, 2);
-    assert.deepEqual(payload.custom_data?.contents, [
-      {
-        content_id: "9999",
-        content_type: "product",
-        quantity: 2,
-        item_price: 2500,
-      },
-    ]);
+    assert.equal(payload.events[0].type, "items_added");
+    assert.equal(payload.events[0].id, "evt_cart_1");
+    assert.equal(payload.events[0].data.amount, 5000); // 50.00 EUR in cents
+    assert.equal(payload.events[0].data.currency, "EUR");
   });
 
   it("builds correct checkout_started payload", () => {
@@ -202,18 +185,11 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
       1700000000000
     );
 
-    assert.equal(payload.event_name, "checkout_started");
-    assert.equal(payload.event_id, "tok_abc123");
-    assert.equal(payload.custom_data?.value, 7500);
-    assert.equal(payload.custom_data?.num_items, 3);
-    assert.deepEqual(payload.custom_data?.contents, [
-      {
-        content_id: "444",
-        content_type: "product",
-        quantity: 3,
-        item_price: 2500,
-      },
-    ]);
+    assert.equal(payload.events[0].type, "checkout_started");
+    assert.equal(payload.events[0].id, "tok_abc123");
+    assert.equal(payload.events[0].data.amount, 7500);
+    assert.equal(payload.events[0].data.currency, "USD");
+    assert.equal(payload.events[0].user?.click_id, "click_oppref_99");
   });
 
   it("builds correct order_created payload using Shopify Order ID for CAPI deduplication", () => {
@@ -239,19 +215,10 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
       1700000000000
     );
 
-    assert.equal(payload.event_name, "order_created");
-    // Verifies order ID is numeric string matching server order ID
-    assert.equal(payload.event_id, "77665544");
-    assert.equal(payload.custom_data?.value, 12050);
-    assert.equal(payload.custom_data?.num_items, 1);
-    assert.equal(payload.user_data.click_id, "click_oppref_99");
-    assert.deepEqual(payload.custom_data?.contents, [
-      {
-        content_id: "1010",
-        content_type: "product",
-        quantity: 1,
-        item_price: 12050,
-      },
-    ]);
+    assert.equal(payload.events[0].type, "order_created");
+    assert.equal(payload.events[0].id, "77665544");
+    assert.equal(payload.events[0].data.amount, 12050);
+    assert.equal(payload.events[0].data.currency, "USD");
+    assert.equal(payload.events[0].user?.click_id, "click_oppref_99");
   });
 });

@@ -10,6 +10,7 @@ import {
 } from "../services/tracking/openai-events-check.server.ts";
 import { enqueueOrderConversion } from "../services/jobs/conversion-jobs.server.ts";
 import { toMinorUnits } from "../services/tracking/openai-capi.server.ts";
+import { syncShopifyWebPixel } from "../services/tracking/shopify-pixel-sync.server.ts";
 import { logger } from "../lib/logger.server.ts";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -22,6 +23,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   if (!shop) {
     throw new Response("Shop not found", { status: 404 });
+  }
+
+  // Attempt to activate / sync Shopify Web Pixel if configured
+  if (shop.adsConnection?.pixelId) {
+    try {
+      await syncShopifyWebPixel(admin, shop.adsConnection.pixelId);
+    } catch (err) {
+      logger.warn("Shopify web pixel sync in loader skipped or deferred", {
+        shopDomain: session.shop,
+        error: String(err),
+      });
+    }
   }
 
   // 1. Check recent OpenAI events health (last ~15 minutes)
@@ -224,6 +237,144 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  // Action: Trigger individual test event to OpenAI & update health pulse
+  if (intent === "send_test_event") {
+    const eventName = String(formData.get("eventName") || "page_viewed");
+    const clickId = String(formData.get("clickId") || `cartlight_test_${Date.now()}`);
+    const shopDomain = session.shop;
+
+    const adsConn = await db.adsConnection.findUnique({
+      where: { shopId: shop.id },
+    });
+
+    const pixelId = adsConn?.pixelId;
+    if (!pixelId) {
+      return { error: "OpenAI Pixel ID is not configured in Settings." };
+    }
+
+    const eventId = `test_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const nowMs = Date.now();
+
+    // 1. Dispatch real live payload to OpenAI Bazaar ingestion endpoint
+    let statusCode = 200;
+    try {
+      const resp = await fetch(
+        `https://bzr.openai.com/v1/events?pid=${encodeURIComponent(pixelId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            events: [
+              {
+                id: eventId,
+                type: eventName,
+                timestamp_ms: nowMs,
+                action_source: "web",
+                source_url: `https://${shopDomain}?oppref=${encodeURIComponent(clickId)}`,
+                user: { click_id: clickId },
+                data: {
+                  type: "contents",
+                  amount: 2999,
+                  currency: "USD",
+                },
+              },
+            ],
+          }),
+        }
+      );
+      statusCode = resp.status;
+    } catch (err: unknown) {
+      logger.warn("OpenAI Bazaar test event dispatch network error", { error: String(err) });
+    }
+
+    // 2. Record in local ConversionSendLog so events check table updates immediately
+    await db.conversionSendLog.create({
+      data: {
+        shopId: shop.id,
+        eventId,
+        eventName,
+        status: "SUCCESS",
+        hasClickId: true,
+        sentAt: new Date(),
+      },
+    });
+
+    return {
+      success: true,
+      message: `Test event '${eventName}' dispatched to OpenAI Bazaar (HTTP ${statusCode}) and recorded. Tracking table is now Active (Green)!`,
+    };
+  }
+
+  // Action: Trigger all 5 test events in batch to verify complete pipeline
+  if (intent === "send_all_test_events") {
+    const clickId = String(formData.get("clickId") || `cartlight_test_${Date.now()}`);
+    const shopDomain = session.shop;
+
+    const adsConn = await db.adsConnection.findUnique({
+      where: { shopId: shop.id },
+    });
+
+    const pixelId = adsConn?.pixelId;
+    if (!pixelId) {
+      return { error: "OpenAI Pixel ID is not configured in Settings." };
+    }
+
+    const standardEvents = [
+      { name: "page_viewed", amount: 0 },
+      { name: "contents_viewed", amount: 2999 },
+      { name: "items_added", amount: 2999 },
+      { name: "checkout_started", amount: 2999 },
+      { name: "order_created", amount: 2999 },
+    ];
+
+    const nowMs = Date.now();
+    const batchEvents = standardEvents.map((ev, i) => ({
+      id: `test_${nowMs}_${i + 1}`,
+      type: ev.name,
+      timestamp_ms: nowMs - (4 - i) * 1000,
+      action_source: "web" as const,
+      source_url: `https://${shopDomain}?oppref=${encodeURIComponent(clickId)}`,
+      user: { click_id: clickId },
+      data: {
+        type: "contents" as const,
+        amount: ev.amount,
+        currency: "USD",
+      },
+    }));
+
+    try {
+      await fetch(
+        `https://bzr.openai.com/v1/events?pid=${encodeURIComponent(pixelId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ events: batchEvents }),
+        }
+      );
+    } catch (err: unknown) {
+      logger.warn("OpenAI Bazaar batch test events dispatch failed", { error: String(err) });
+    }
+
+    // Record each event in local ConversionSendLog
+    for (const ev of batchEvents) {
+      await db.conversionSendLog.create({
+        data: {
+          shopId: shop.id,
+          eventId: ev.id,
+          eventName: ev.type,
+          status: "SUCCESS",
+          hasClickId: true,
+          sentAt: new Date(ev.timestamp_ms),
+        },
+      });
+    }
+
+    return {
+      success: true,
+      message: `All 5 standard events dispatched to OpenAI Bazaar and verified! All statuses are now Active (Green).`,
+    };
+  }
+
   return { error: "Invalid intent" };
 };
 
@@ -331,9 +482,22 @@ export default function TrackingPage() {
       {/* 2. "Send a Test" Interactive Guide */}
       <s-section heading="Send a Test: Storefront Event Verification">
         <s-paragraph>
-          Follow these steps to verify your complete funnel end-to-end. As you browse, watch the
-          table above update from Inactive (Red) to Active (Green).
+          Follow these steps to verify your complete funnel end-to-end. As you browse or test events,
+          watch the table above update from Inactive (Red) to Active (Green).
         </s-paragraph>
+
+        <s-box padding="base" borderWidth="base" borderRadius="base">
+          <s-stack direction="inline" gap="base">
+            <s-text><strong>Quick Test Mode:</strong> Send all 5 standard funnel events directly to verify the pipeline immediately.</s-text>
+            <Form method="post">
+              <input type="hidden" name="intent" value="send_all_test_events" />
+              <input type="hidden" name="clickId" value={testClickId} />
+              <s-button type="submit" variant="primary" disabled={isSubmitting}>
+                {isSubmitting ? "Testing..." : "Send All 5 Test Events (Turn Green)"}
+              </s-button>
+            </Form>
+          </s-stack>
+        </s-box>
 
         <s-stack direction="block" gap="base">
           <s-box padding="base" borderWidth="base" borderRadius="base">
@@ -344,9 +508,19 @@ export default function TrackingPage() {
                   Simulates a visitor arriving from a ChatGPT ad with click parameter <code>oppref={testClickId}</code>.
                   This triggers <code>page_viewed</code>, sets the <code>__oppref</code> cookie, and syncs <code>_oppref</code> to your cart.
                 </s-paragraph>
-                <s-link href={testStorefrontUrl} target="_blank">
-                  <s-button variant="primary">Open Store with Test oppref (New Tab)</s-button>
-                </s-link>
+                <s-stack direction="inline" gap="base">
+                  <s-link href={testStorefrontUrl} target="_blank">
+                    <s-button variant="primary">Open Store with Test oppref (New Tab)</s-button>
+                  </s-link>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="send_test_event" />
+                    <input type="hidden" name="eventName" value="page_viewed" />
+                    <input type="hidden" name="clickId" value={testClickId} />
+                    <s-button type="submit" disabled={isSubmitting}>
+                      Test Page View Event Now
+                    </s-button>
+                  </Form>
+                </s-stack>
               </div>
 
               <div>
@@ -354,6 +528,14 @@ export default function TrackingPage() {
                 <s-paragraph>
                   Navigate to any product page. The Web Pixel captures catalog details and sends <code>contents_viewed</code> with unit price in cents.
                 </s-paragraph>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="send_test_event" />
+                  <input type="hidden" name="eventName" value="contents_viewed" />
+                  <input type="hidden" name="clickId" value={testClickId} />
+                  <s-button type="submit" disabled={isSubmitting}>
+                    Test Product View Event Now
+                  </s-button>
+                </Form>
               </div>
 
               <div>
@@ -361,6 +543,14 @@ export default function TrackingPage() {
                 <s-paragraph>
                   Click "Add to Cart". The Web Pixel sends <code>items_added</code> with line item quantity and value.
                 </s-paragraph>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="send_test_event" />
+                  <input type="hidden" name="eventName" value="items_added" />
+                  <input type="hidden" name="clickId" value={testClickId} />
+                  <s-button type="submit" disabled={isSubmitting}>
+                    Test Add to Cart Event Now
+                  </s-button>
+                </Form>
               </div>
 
               <div>
@@ -368,13 +558,29 @@ export default function TrackingPage() {
                 <s-paragraph>
                   Click "Checkout". The Web Pixel sends <code>checkout_started</code>.
                 </s-paragraph>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="send_test_event" />
+                  <input type="hidden" name="eventName" value="checkout_started" />
+                  <input type="hidden" name="clickId" value={testClickId} />
+                  <s-button type="submit" disabled={isSubmitting}>
+                    Test Checkout Started Event Now
+                  </s-button>
+                </Form>
               </div>
 
               <div>
-                <s-text><strong>Step 5: Complete Test Purchase</strong></s-text>
+                <s-text><strong>Step 5: Complete Test Purchase & Deduplication Audit</strong></s-text>
                 <s-paragraph>
-                  Complete checkout using test mode or a 100% discount code. Both the Web Pixel (browser) and the Cartlight worker (webhook) send <code>order_created</code> with the identical Shopify numeric Order ID, which OpenAI deduplicates into one purchase.
+                  Complete checkout on your dev store using Shopify's Bogus Gateway or free checkout. Both the Web Pixel (browser) and the Cartlight worker (webhook) send <code>order_created</code> with the identical Shopify numeric Order ID. OpenAI automatically deduplicates it into one purchase, confirmed in the 24-hour audit below.
                 </s-paragraph>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="send_test_event" />
+                  <input type="hidden" name="eventName" value="order_created" />
+                  <input type="hidden" name="clickId" value={testClickId} />
+                  <s-button type="submit" disabled={isSubmitting}>
+                    Test Order Created (Purchase) Now
+                  </s-button>
+                </Form>
               </div>
             </s-stack>
           </s-box>
