@@ -31,12 +31,34 @@ describe("OpenAI Web Pixel Utilities & Payloads", () => {
     assert.equal(normalizeShopifyId(null), "");
   });
 
-  it("converts currency float amounts into integer minor units (cents)", () => {
+  it("converts currency decimal amounts into integer minor units without float multiplication", () => {
+    // Exact user requirement test cases:
+    assert.equal(toMinorUnits(19.99), 1999);
+    assert.equal(toMinorUnits("19.99"), 1999);
+    assert.equal(toMinorUnits(0.29), 29);
+    assert.equal(toMinorUnits("0.29"), 29);
+    assert.equal(toMinorUnits(1.005), 101); // Round half away from zero on 3rd decimal
+    assert.equal(toMinorUnits("1.005"), 101);
+    assert.equal(toMinorUnits(1999, "JPY"), 1999); // JPY exponent 0
+    assert.equal(toMinorUnits("1999", "JPY"), 1999);
     assert.equal(toMinorUnits(29.99), 2999);
     assert.equal(toMinorUnits("14.50"), 1450);
     assert.equal(toMinorUnits(0), 0);
-    assert.equal(toMinorUnits(null), 0);
     assert.equal(toMinorUnits(100), 10000);
+  });
+
+  it("handles null and undefined gracefully by returning 0", () => {
+    assert.equal(toMinorUnits(null), 0);
+    assert.equal(toMinorUnits(undefined), 0);
+  });
+
+  it("throws RangeError for malformed strings, scientific notation, letters, commas, NaN, and Infinity", () => {
+    assert.throws(() => toMinorUnits("1,299.00"), RangeError);
+    assert.throws(() => toMinorUnits("abc"), RangeError);
+    assert.throws(() => toMinorUnits("1e-7"), RangeError);
+    assert.throws(() => toMinorUnits("1.2.3"), RangeError);
+    assert.throws(() => toMinorUnits(NaN), RangeError);
+    assert.throws(() => toMinorUnits(Infinity), RangeError);
   });
 
   it("extracts oppref click ID accurately from landing URLs", () => {

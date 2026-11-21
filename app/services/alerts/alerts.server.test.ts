@@ -1,4 +1,4 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import db from "../../db.server.ts";
 import {
@@ -24,6 +24,15 @@ describe("Alerts System & Zoho CPaaS Integration", () => {
 
     // Clean any prior alerts for this shop
     await db.alert.deleteMany({ where: { shopId: testShopId } });
+  });
+
+  after(async () => {
+    if (testShopId) {
+      await db.alert.deleteMany({ where: { shopId: testShopId } });
+      await db.adsConnection.deleteMany({ where: { shopId: testShopId } });
+      await db.product.deleteMany({ where: { shopId: testShopId } });
+      await db.shop.deleteMany({ where: { id: testShopId } });
+    }
   });
 
   describe("sendZohoCpaasEmail()", () => {

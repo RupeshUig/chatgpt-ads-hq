@@ -37,10 +37,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // 1. Check recent OpenAI events health (last ~15 minutes)
-  const eventsHealth = await checkOpenAiEventsHealth(shop.id);
-
-  // 2. Query Shopify orders for the last 24 hours
+  // 1. Query Shopify orders for the last 24 hours
   const twentyFourHoursAgoISO = new Date(
     Date.now() - 24 * 60 * 60 * 1000
   ).toISOString();
@@ -103,8 +100,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  // 3. Run Purchase Gap Analysis comparing Shopify orders with OpenAI CAPI logs
+  // 2. Run Purchase Gap Analysis comparing Shopify orders with OpenAI CAPI logs
   const purchaseGaps = await analyzePurchaseGaps(shop.id, rawOrders);
+
+  // 3. Check recent OpenAI events health (last ~15 minutes + 24h gap awareness)
+  const eventsHealth = await checkOpenAiEventsHealth(shop.id, { purchaseGaps });
 
   return {
     shopDomain: session.shop,
@@ -457,10 +457,14 @@ export default function TrackingPage() {
                   <code>{ev.eventName}</code>
                 </s-table-cell>
                 <s-table-cell>
-                  {ev.status === "active" ? (
-                    <s-badge tone="success">Active (Green)</s-badge>
+                  {ev.status === "ACTIVE" ? (
+                    <s-badge tone="success">Active</s-badge>
+                  ) : ev.status === "WAITING" ? (
+                    <s-badge tone="info">Waiting for activity</s-badge>
+                  ) : ev.status === "PROBLEM" ? (
+                    <s-badge tone="critical">Issue Detected</s-badge>
                   ) : (
-                    <s-badge tone="critical">Inactive (Red)</s-badge>
+                    <s-badge tone="warning">Not set up yet</s-badge>
                   )}
                 </s-table-cell>
                 <s-table-cell>
@@ -470,7 +474,7 @@ export default function TrackingPage() {
                   <s-text>
                     {ev.lastSeenAt
                       ? new Date(ev.lastSeenAt).toLocaleTimeString()
-                      : "No events in window"}
+                      : "Waiting for first event"}
                   </s-text>
                 </s-table-cell>
               </s-table-row>

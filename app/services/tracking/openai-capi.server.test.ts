@@ -26,11 +26,31 @@ describe("OpenAI Conversions API (CAPI) Service", () => {
     assert.equal(normalizeShopifyOrderId(null), "");
   });
 
-  it("converts order totals and item prices into integer minor units (cents)", () => {
+  it("converts order totals and item prices into integer minor units without float multiplication", () => {
+    // Exact user requirement 2 test cases:
+    assert.equal(toMinorUnits(19.99), 1999);
+    assert.equal(toMinorUnits("19.99"), 1999);
+    assert.equal(toMinorUnits(0.29), 29);
+    assert.equal(toMinorUnits("0.29"), 29);
+    assert.equal(toMinorUnits(1.005), 101); // Round half away from zero on 3rd decimal
+    assert.equal(toMinorUnits("1.005"), 101);
+    assert.equal(toMinorUnits(1999, "JPY"), 1999); // JPY exponent 0
+    assert.equal(toMinorUnits("1999", "JPY"), 1999);
+
+    // Standard cases
     assert.equal(toMinorUnits(120.5), 12050);
     assert.equal(toMinorUnits("99.99"), 9999);
     assert.equal(toMinorUnits(0), 0);
     assert.equal(toMinorUnits(null), 0);
+    assert.equal(toMinorUnits(undefined), 0);
+
+    // Rejection tests: RangeError for malformed strings, scientific notation, letters, commas
+    assert.throws(() => toMinorUnits("1,299.00"), RangeError);
+    assert.throws(() => toMinorUnits("abc"), RangeError);
+    assert.throws(() => toMinorUnits("1e-7"), RangeError);
+    assert.throws(() => toMinorUnits("1.2.3"), RangeError);
+    assert.throws(() => toMinorUnits(NaN), RangeError);
+    assert.throws(() => toMinorUnits(Infinity), RangeError);
   });
 
   it("builds user_data containing strictly click_id and zero personal data", () => {

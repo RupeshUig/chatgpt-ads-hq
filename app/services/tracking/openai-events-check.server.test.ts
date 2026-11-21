@@ -1,9 +1,149 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { analyzePurchaseGaps } from "./openai-events-check.server.ts";
+import { analyzePurchaseGaps, checkOpenAiEventsHealth } from "./openai-events-check.server.ts";
 import db from "../../db.server.ts";
 
 describe("OpenAI Events Check & Purchase Gap Analysis", () => {
+  it("evaluates events health statuses: ACTIVE, WAITING, PROBLEM, NOT_CONFIGURED with persistent lastSeenAt", async () => {
+    const testDomain = `test-health-${Date.now()}.myshopify.com`;
+    const testShop = await db.shop.create({
+      data: {
+        shopDomain: testDomain,
+      },
+    });
+
+    try {
+      // 1. Unconfigured shop -> NOT_CONFIGURED
+      const unconfiguredHealth = await checkOpenAiEventsHealth(testShop.id);
+      assert.equal(unconfiguredHealth.isConnected, false);
+      assert.ok(unconfiguredHealth.events.every((e) => e.status === "NOT_CONFIGURED"));
+
+      // 2. Configured shop, no events ever -> WAITING
+      await db.adsConnection.create({
+        data: {
+          shopId: testShop.id,
+          pixelId: "pid_test_123",
+          encryptedApiKey: "mock_key",
+          keyLast4: "1234",
+        },
+      });
+
+      const waitingHealth = await checkOpenAiEventsHealth(testShop.id);
+      assert.equal(waitingHealth.isConnected, true);
+      const orderEvWaiting = waitingHealth.events.find((e) => e.eventName === "order_created");
+      assert.ok(orderEvWaiting);
+      assert.equal(orderEvWaiting.status, "WAITING");
+      assert.equal(orderEvWaiting.lastSeenAt, null);
+
+      // 3. Historical event from 2 hours ago -> status WAITING (not red!), but lastSeenAt is preserved
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      await db.conversionSendLog.create({
+        data: {
+          shopId: testShop.id,
+          eventId: "old_event_1",
+          eventName: "order_created",
+          status: "SUCCESS",
+          sentAt: twoHoursAgo,
+        },
+      });
+
+      const historicalHealth = await checkOpenAiEventsHealth(testShop.id);
+      const orderEvHist = historicalHealth.events.find((e) => e.eventName === "order_created");
+      assert.ok(orderEvHist);
+      assert.equal(orderEvHist.status, "WAITING"); // Neutral waiting, not red!
+      assert.equal(orderEvHist.count, 0); // 0 in 15m window
+      assert.equal(orderEvHist.lastSeenAt, twoHoursAgo.toISOString()); // Persisted timestamp!
+
+      // 4. Recent event within 15 minutes -> status ACTIVE (green)
+      const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
+      await db.conversionSendLog.create({
+        data: {
+          shopId: testShop.id,
+          eventId: "recent_event_1",
+          eventName: "order_created",
+          status: "SUCCESS",
+          sentAt: fiveMinsAgo,
+        },
+      });
+
+      const activeHealth = await checkOpenAiEventsHealth(testShop.id);
+      const orderEvActive = activeHealth.events.find((e) => e.eventName === "order_created");
+      assert.ok(orderEvActive);
+      assert.equal(orderEvActive.status, "ACTIVE");
+      assert.equal(orderEvActive.count, 1);
+      assert.equal(orderEvActive.lastSeenAt, fiveMinsAgo.toISOString());
+
+      // 5. Recent failure when count = 0 -> status PROBLEM (red)
+      // Delete recent success and create a failure
+      await db.conversionSendLog.deleteMany({ where: { eventId: "recent_event_1" } });
+      await db.conversionSendLog.create({
+        data: {
+          shopId: testShop.id,
+          eventId: "failed_event_1",
+          eventName: "order_created",
+          status: "FAILED",
+          errorMessage: "Invalid API credentials",
+          sentAt: new Date(),
+        },
+      });
+
+      const problemHealth = await checkOpenAiEventsHealth(testShop.id);
+      const orderEvProblem = problemHealth.events.find((e) => e.eventName === "order_created");
+      assert.ok(orderEvProblem);
+      assert.equal(orderEvProblem.status, "PROBLEM");
+      assert.equal(orderEvProblem.problemReason, "Invalid API credentials");
+    } finally {
+      await db.conversionSendLog.deleteMany({ where: { shopId: testShop.id } });
+      await db.adsConnection.deleteMany({ where: { shopId: testShop.id } });
+      await db.shop.deleteMany({ where: { id: testShop.id } });
+    }
+  });
+
+  it("triggers PROBLEM tracking status when 24h gap analysis finds Shopify orders but zero OpenAI purchases", async () => {
+    const testDomain = `test-gap-problem-${Date.now()}.myshopify.com`;
+    const testShop = await db.shop.create({
+      data: {
+        shopDomain: testDomain,
+      },
+    });
+
+    try {
+      await db.adsConnection.create({
+        data: {
+          shopId: testShop.id,
+          pixelId: "pid_test_gap",
+          encryptedApiKey: "mock_key",
+          keyLast4: "5678",
+        },
+      });
+
+      const gapAnalysisWithZeroPurchases = {
+        totalShopifyOrders: 3,
+        attributedOrders: 2,
+        syncedPurchases: 0, // Zero OpenAI-reported purchase events!
+        gapCount: 2,
+        gaps: [],
+        allOrders: [],
+      };
+
+      const gapTriggeredHealth = await checkOpenAiEventsHealth(testShop.id, {
+        purchaseGaps: gapAnalysisWithZeroPurchases,
+      });
+
+      const orderEvGapProblem = gapTriggeredHealth.events.find((e) => e.eventName === "order_created");
+      assert.ok(orderEvGapProblem);
+      assert.equal(orderEvGapProblem.status, "PROBLEM");
+      assert.match(
+        orderEvGapProblem.problemReason || "",
+        /3 Shopify order\(s\) in last 24h, but zero OpenAI purchase conversion events/
+      );
+    } finally {
+      await db.conversionSendLog.deleteMany({ where: { shopId: testShop.id } });
+      await db.adsConnection.deleteMany({ where: { shopId: testShop.id } });
+      await db.shop.deleteMany({ where: { id: testShop.id } });
+    }
+  });
+
   it("classifies orders correctly into synced, organic, and gap states", async () => {
     // Upsert a test shop to satisfy foreign key constraint
     const testShop = await db.shop.upsert({

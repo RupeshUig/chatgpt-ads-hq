@@ -96,6 +96,8 @@ model Shop {
   auditLogs          AuditLog[]
   feedDeltas         FeedDelta[]
   conversionSendLogs ConversionSendLog[]
+  orderProfitRecords OrderProfitRecord[]
+  lastProfitSyncAt   DateTime?
 
   @@index([shopDomain])
 }
@@ -247,4 +249,46 @@ model ConversionSendLog {
   @@index([shopId, status])
   @@index([shopId, sentAt])
 }
+
+model ExchangeRate {
+  id        String   @id @default(uuid())
+  date      DateTime @db.Date
+  base      String   // Always "EUR" for ECB reference rates
+  quote     String   // e.g. "USD", "JPY", "GBP"
+  rate      Decimal  @db.Decimal(18, 6)
+  createdAt DateTime @default(now())
+
+  @@unique([date, base, quote])
+  @@index([date, base, quote])
+  @@index([quote, date])
+}
+
+model OrderProfitRecord {
+  id                String   @id @default(uuid())
+  shopId            String
+  shop              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyOrderId    String   // Stable numeric Shopify order ID (e.g. "99887766")
+  orderDate         DateTime // Stored in UTC
+  totalChargedMinor Int      // Gross amount charged to customer (sent to Pixel/CAPI)
+  netRevenueMinor   Int      // Line items after discounts + customer shipping, strictly excluding sales tax
+  cogsMinor         Int      @default(0)
+  shippingCostMinor Int      @default(0)
+  paymentFeeMinor   Int      @default(0)
+  profitMinor       Int      @default(0)
+  isEstimated       Boolean  @default(false)
+  costSource        String   @default("REAL") // "REAL" | "ESTIMATED"
+  clickId           String?  // oppref click ID
+  campaignId        String?  // Validated OpenAI campaign ID if confirmed
+  attributionStatus String   @default("NOT_ATTRIBUTED") // "MATCHED_CLICK" | "NOT_ATTRIBUTED"
+  lineItemsJson     Json?    // Array of line item profit snapshots
+  refundsJson       Json?    // Refund impact records
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([shopId, shopifyOrderId])
+  @@index([shopId, orderDate])
+  @@index([shopId, attributionStatus])
+  @@index([shopId, campaignId])
+}
+
 

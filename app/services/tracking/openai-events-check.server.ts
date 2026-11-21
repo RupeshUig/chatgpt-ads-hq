@@ -12,9 +12,10 @@ export interface EventHealthStatus {
     | "checkout_started"
     | "order_created";
   displayName: string;
-  status: "active" | "inactive";
+  status: "ACTIVE" | "WAITING" | "PROBLEM" | "NOT_CONFIGURED";
   count: number;
   lastSeenAt: string | null;
+  problemReason?: string;
 }
 
 export interface PurchaseGapItem {
@@ -55,7 +56,11 @@ const STANDARD_EVENT_DISPLAY_NAMES: Record<
  * Falls back to database logs and graceful defaults if credentials are not configured or OpenAI API is unreachable.
  */
 export async function checkOpenAiEventsHealth(
-  shopId: string
+  shopId: string,
+  options?: {
+    purchaseGaps?: PurchaseGapAnalysis | null;
+    hasOrdersWithZeroPurchases?: boolean;
+  }
 ): Promise<{
   isConnected: boolean;
   pixelId: string | null;
@@ -75,46 +80,77 @@ export async function checkOpenAiEventsHealth(
     pixelId && (connection?.encryptedConversionKey || connection?.encryptedApiKey)
   );
 
-  // Initialize all 5 standard events with inactive default state
+  const initialStatus: EventHealthStatus["status"] = isConfigured ? "WAITING" : "NOT_CONFIGURED";
+
+  // Initialize all 5 standard events
   const eventMap: Record<EventHealthStatus["eventName"], EventHealthStatus> = {
     page_viewed: {
       eventName: "page_viewed",
       displayName: STANDARD_EVENT_DISPLAY_NAMES.page_viewed,
-      status: "inactive",
+      status: initialStatus,
       count: 0,
       lastSeenAt: null,
     },
     contents_viewed: {
       eventName: "contents_viewed",
       displayName: STANDARD_EVENT_DISPLAY_NAMES.contents_viewed,
-      status: "inactive",
+      status: initialStatus,
       count: 0,
       lastSeenAt: null,
     },
     items_added: {
       eventName: "items_added",
       displayName: STANDARD_EVENT_DISPLAY_NAMES.items_added,
-      status: "inactive",
+      status: initialStatus,
       count: 0,
       lastSeenAt: null,
     },
     checkout_started: {
       eventName: "checkout_started",
       displayName: STANDARD_EVENT_DISPLAY_NAMES.checkout_started,
-      status: "inactive",
+      status: initialStatus,
       count: 0,
       lastSeenAt: null,
     },
     order_created: {
       eventName: "order_created",
       displayName: STANDARD_EVENT_DISPLAY_NAMES.order_created,
-      status: "inactive",
+      status: initialStatus,
       count: 0,
       lastSeenAt: null,
     },
   };
 
-  // 1. Check local ConversionSendLog for events within the last 15 minutes
+  // 1. Populate persistent last-seen timestamps from all-time successful event logs
+  const allTimeLogs = await db.conversionSendLog.findMany({
+    where: {
+      shopId,
+      status: "SUCCESS",
+    },
+    orderBy: { sentAt: "desc" },
+    take: 50,
+  });
+
+  for (const log of allTimeLogs) {
+    const name = log.eventName as EventHealthStatus["eventName"];
+    if (eventMap[name] && !eventMap[name].lastSeenAt) {
+      eventMap[name].lastSeenAt = log.sentAt.toISOString();
+    }
+  }
+
+  // 2. Check for evidence of problems (recent failed conversions or connection errors)
+  const recentFailures = await db.conversionSendLog.findMany({
+    where: {
+      shopId,
+      status: "FAILED",
+      sentAt: { gte: fifteenMinutesAgo },
+    },
+    orderBy: { sentAt: "desc" },
+  });
+
+  const hasConnectionError = connection?.status === "ERROR";
+
+  // 3. Check local ConversionSendLog for events within the last 15 minutes
   const recentSuccessfulEvents = await db.conversionSendLog.findMany({
     where: {
       shopId,
@@ -128,7 +164,7 @@ export async function checkOpenAiEventsHealth(
     const name = ev.eventName as EventHealthStatus["eventName"];
     if (eventMap[name]) {
       eventMap[name].count += 1;
-      eventMap[name].status = "active";
+      eventMap[name].status = "ACTIVE";
       if (!eventMap[name].lastSeenAt || ev.sentAt > new Date(eventMap[name].lastSeenAt)) {
         eventMap[name].lastSeenAt = ev.sentAt.toISOString();
       }
@@ -169,7 +205,7 @@ export async function checkOpenAiEventsHealth(
               const count = ev.count || 0;
               if (count > 0) {
                 eventMap[name].count = Math.max(eventMap[name].count, count);
-                eventMap[name].status = "active";
+                eventMap[name].status = "ACTIVE";
                 if (ev.last_seen_at) {
                   eventMap[name].lastSeenAt = ev.last_seen_at;
                 }
@@ -187,6 +223,36 @@ export async function checkOpenAiEventsHealth(
       logger.warn("Failed to fetch OpenAI events check endpoint", {
         error: String(err),
       });
+    }
+  }
+
+  // 4. Final status resolution for all events
+  const hasOrdersWithZeroPurchases = Boolean(
+    options?.hasOrdersWithZeroPurchases ||
+    (options?.purchaseGaps &&
+      options.purchaseGaps.totalShopifyOrders > 0 &&
+      options.purchaseGaps.syncedPurchases === 0)
+  );
+
+  for (const name of Object.keys(eventMap) as Array<EventHealthStatus["eventName"]>) {
+    const ev = eventMap[name];
+    if (ev.count > 0) {
+      ev.status = "ACTIVE";
+    } else if (!isConfigured) {
+      ev.status = "NOT_CONFIGURED";
+    } else {
+      const failure = recentFailures.find((f) => f.eventName === name || name === "order_created");
+      if (hasConnectionError || failure) {
+        ev.status = "PROBLEM";
+        ev.problemReason = failure?.errorMessage || "Ads connection status error";
+      } else if (name === "order_created" && hasOrdersWithZeroPurchases) {
+        ev.status = "PROBLEM";
+        ev.problemReason = options?.purchaseGaps
+          ? `${options.purchaseGaps.totalShopifyOrders} Shopify order(s) in last 24h, but zero OpenAI purchase conversion events were reported.`
+          : "Shopify order(s) in last 24h, but zero OpenAI purchase conversion events were reported.";
+      } else {
+        ev.status = "WAITING";
+      }
     }
   }
 
